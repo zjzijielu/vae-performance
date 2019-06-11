@@ -20,17 +20,18 @@ def main():
     parent_dir = os.path.abspath(os.path.join(os.getcwd(), os.pardir))
     song_folder = parent_dir + "/data/"
     '''
-    the aligned folder is "data/aligned/"
+    the aligned fgt folder is "data/aligned_fgt/"
     the raw folder is "data/raw/"
     '''
     if aligned == 1:
-        song_folder += 'aligned/aligned_' + song + '/'
+        song_folder += 'aligned_fgt/fgt_' + song + '/'
     else:
         song_folder += 'raw/' + song + '/'
     
     # user midiloader to convert all txt to 1hot vectors
+    score_dir = song_folder + 'score/'
     loader = MidiLoader()
-    loader.str_notes_to_1hot(song_folder)
+    loader.str_notes_to_1hot(song_folder, score_dir)
 
 if __name__ == '__main__':
     main()
