@@ -1,6 +1,7 @@
 import argparse
 from data_loader import MidiLoader
 from utils import *
+import shutil
 
 def main_txt():
     '''
@@ -38,7 +39,8 @@ def main():
     we convert these data into 2 bar performance data and store in ../data/performance/2bar_data/
     '''
     parent_dir = os.path.abspath(os.path.join(os.getcwd(), os.pardir))
-    song_folder = parent_dir + "/data/perf_tempo_csv/"
+    song_folder = parent_dir + "/data/perf_start_sorted/"
+    # shutil.rmtree(parent_dir + "/data/2bars_data/")
     
     loader = MidiLoader()
     loader.str_notes_to_1hot(song_folder)
