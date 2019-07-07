@@ -29,7 +29,7 @@ ioi_time_idx = p.ioi_time_idx - score_1hot_dim
 
 class VAE(nn.Module):
     def __init__(self, roll_dims, hidden_dims,
-                 z_dims, k=1500):
+                 z_dims, batch_size, k=1500):
         super(VAE, self).__init__()
         self.gru_0 = nn.GRU(roll_dims, hidden_dims, batch_first=False, bidirectional=True)
         self.linear_mu = nn.Linear(hidden_dims * 2, z_dims)
@@ -39,9 +39,11 @@ class VAE(nn.Module):
         self.grucell_2 = nn.GRUCell(hidden_dims, hidden_dims)
         self.linear_out = nn.Linear(hidden_dims, perf_1hot_dim)
         self.linear_init = nn.Linear(z_dims, hidden_dims)
+        self.bn = nn.BatchNorm2d(1) # as channel is 1
         self.roll_dims = roll_dims
         self.hidden_dims = hidden_dims
         self.eps = 1
+        self.batch_size = batch_size
         self.z_dims = z_dims
         self.sample = None
         self.iteration = 0
@@ -52,11 +54,11 @@ class VAE(nn.Module):
         x = torch.zeros_like(x)
         arange = torch.arange(x.size(0)).long()
         if torch.cuda.is_available():
-            arange = arange.cuda()
+            arange = arange.cuda()  
         x[arange, idx] = 1
         return x
 
-    def encode(self, x):
+    def encode(self, x, x_lengths):
         '''
         in our case, x denotes all notes in 2 bars (length is not fixed)
         shape of x: n * onehot_dim, n being the number of notes
@@ -72,17 +74,23 @@ class VAE(nn.Module):
         '''
         # self.gru_0.flatten_parameters()
         n_seq = x.shape[0]
-        hidden = torch.zeros((2, 1, self.hidden_dims))
-        
-        x, hidden = self.gru_0(x.view(n_seq, 1, -1), hidden)
+        hidden = torch.zeros((2, self.batch_size, self.hidden_dims))
+
+        x = x.float()
+        X = nn.utils.rnn.pack_padded_sequence(x, x_lengths)
+
+        X, hidden = self.gru_0(X, hidden)
+        # x, hidden = self.gru_0(x.view(n_seq, 1, -1), hidden)
         # x = self.gru_0(x)[-1]
         # x = x.transpose_(0, 1).contiguous()
         # x = x.view(x.size(0), -1)
-        hidden = hidden.view(1, -1)
+        hidden = hidden.view(self.batch_size, 1, -1, 1)
+        print(hidden.size())
+        hidden = self.bn(hidden).view(self.batch_size, -1)
         # mean = self.linear_mu(x)
         mean = self.linear_mu(hidden)
         stddev = (self.linear_var(hidden) * 0.5).exp_()
-        return Normal(mean, stddev)
+        return mean, stddev
 
     def reparameterize(self, mu, logvar):
         if self.training:
@@ -92,82 +100,96 @@ class VAE(nn.Module):
         else:
             return mu
 
-    def decode(self, z, score):
+    def decode(self, Z, score, x_lengths):
         '''
         in vanilla VAE, we don't have hierarchical structure
         z will have shape 1 * z_dims
 
         input:
-            1. representation z
+            1. representation z (batch_size, z_dims) 
             2. score pitch (n_seq, score_dim)
             
         output: 
-            predicted perf (n_seq, perf_dim)
+            predicted perf (n_seq, perf_dim) for a batch
         '''
         # out = torch.zeros((z.size(0), self.roll_dims))
-        steps = score.shape[0]
-        out = torch.zeros((1, perf_1hot_dim))
-        score_out = torch.zeros((1, score_1hot_dim))
-        # start with rest 
-        out[:, -1] = 1. # TODO: rest is not defined
-        score_out[:, -1] = 1 # TODO: rest is not defined
-        hx = [None, None, None]
-        x = []
-        t = F.tanh(self.linear_init(z))
-        hx[0] = t # the initial hidden state
-        if torch.cuda.is_available():
-            out = out.cuda()
-        for i in range(steps):
-            # at each step we concatenate score, z, and 
-            # the predicted result from the last step
-            # print("#" * 5, 'step', i)
-            out = out.view(1, -1)
-            out = torch.cat([out, score_out, z], 1)
-            # print("out shape:", out.shape)
-            hx[0] = self.grucell_0(
-                out, hx[0])
-            if i == 0:
-                hx[1] = hx[0]
-            hx[1] = self.grucell_1(
-                hx[0], hx[1])
-            if i == 0:
-                hx[2] = hx[1]
-            hx[2] = self.grucell_2(
-                hx[1], hx[2])
-            hx_out = self.linear_out(hx[2])
+        outs = []
+
+        for i in range(self.batch_size):
+            steps = x_lengths[i]
             out = torch.zeros((1, perf_1hot_dim))
-            out[:, durratio_idx:dy_idx] = F.log_softmax(hx_out[:, durratio_idx:dy_idx], 1)
-            out[:, dy_idx:ioi_time_idx] = F.log_softmax(hx_out[:, dy_idx:ioi_time_idx], 1)
-            out[:, ioi_time_idx:] = F.log_softmax(hx_out[:, ioi_time_idx:], 1)
-            x.append(out)
-            score_out = score[i:i+1, :]
-            if self.training:
-                p = torch.rand(1).item()
-                if p < self.eps:
-                    out = self.sample[i, durratio_idx+score_1hot_dim:]
-                    # print(1)
+            score_out = torch.zeros((1, score_1hot_dim))
+            z = Z[i:i+1, :]
+            # start with rest 
+            out[:, -1] = 1. # TODO: rest is not defined
+            score_out[:, -1] = 1 # TODO: rest is not defined
+            hx = [None, None, None]
+            x = []
+            t = F.tanh(self.linear_init(z))
+            hx[0] = t # the initial hidden state
+            if torch.cuda.is_available():
+                out = out.cuda()
+            for j in range(steps):
+                # at each step we concatenate score, z, and 
+                # the predicted result from the last step
+                assert(out.size(-1) == perf_1hot_dim)
+                out = out.view(1, -1)
+                assert(score_out.size(-1) != 0)
+                out = torch.cat([out.float(), score_out.float(), z], 1)
+                hx[0] = self.grucell_0(
+                    out, hx[0])
+                if j == 0:
+                    hx[1] = hx[0]
+                hx[1] = self.grucell_1(
+                    hx[0], hx[1])
+                if j == 0:
+                    hx[2] = hx[1]
+                hx[2] = self.grucell_2(
+                    hx[1], hx[2])
+                hx_out = self.linear_out(hx[2])
+                out = torch.zeros((1, perf_1hot_dim))
+                out[:, durratio_idx:dy_idx] = F.log_softmax(hx_out[:, durratio_idx:dy_idx], 1)
+                out[:, dy_idx:ioi_time_idx] = F.log_softmax(hx_out[:, dy_idx:ioi_time_idx], 1)
+                out[:, ioi_time_idx:] = F.log_softmax(hx_out[:, ioi_time_idx:], 1)
+                x.append(out)
+                score_out = score[j, i:i+1, :]
+                if self.training:
+                    p = torch.rand(1).item()
+                    if p < self.eps:
+                        out = self.sample[j, i, durratio_idx+score_1hot_dim:]
+                    else:
+                        out = self._sampling(out)
+                    # print(out.shape)
+                    self.eps = self.k / \
+                        (self.k + torch.exp(self.iteration / self.k))
+                    self.iteration += 1
                 else:
                     out = self._sampling(out)
-                    # print(2)
-                # print(out.shape)
-                self.eps = self.k / \
-                    (self.k + torch.exp(self.iteration / self.k))
-                self.iteration += 1
-            else:
-                out = self._sampling(out)
-        return torch.stack(x, 0)
+            outs.append(torch.stack(x, 0))
+        return outs
 
 
-    def forward(self, x):
-        score = x[:, :score_1hot_dim]
+    def forward(self, x, x_lengths):
+        score = x[:, :, :score_1hot_dim]
         if self.training:
             self.sample = x.clone()
-        dis = self.encode(x)
+        means, stddevs = self.encode(x, x_lengths)
+        assert(means.size(0) == self.batch_size)
+        assert(stddevs.size(0) == self.batch_size)
+        z = torch.zeros((self.batch_size, self.z_dims))
+        dis_mean = torch.zeros((self.batch_size, self.z_dims))
+        dis_stddev = torch.zeros((self.batch_size, self.z_dims))
         if self.training:
-            z = dis.rsample()
+            for i in range(self.batch_size):
+                dis = Normal(means[i], stddevs[i])
+                z[i] = dis.rsample()
+                dis_mean[i] = dis.mean
+                dis_stddev[i] = dis.stddev
         else:
-            z = dis.mean
-        return self.decode(z, score), dis.mean, dis.stddev
+            for i in range(self.batch_size):
+                z[i] = Normal(means[i], stddevs[i]).mean
+        assert(z.size(0) == self.batch_size)
+        return self.decode(z, score, x_lengths), dis_mean, dis_stddev
 
 
 class VAE_disentangle(nn.Module):

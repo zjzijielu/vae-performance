@@ -6,6 +6,7 @@ from tensorboardX import SummaryWriter
 from torch.optim.lr_scheduler import ExponentialLR
 from utils import *
 from torch.distributions import kl_divergence, Normal
+from torch import LongTensor
 from torch.nn import functional as F
 from params import parameters
 
@@ -79,6 +80,17 @@ def loss_function(recon_x, x, mean, stddev, beta=1):
             Normal(torch.zeros_like(mean_ioi), torch.ones_like(stddev_ioi))).mean()
     return CE_durratio + KLD_durratio + CE_dy + KLD_dy + CE_ioi + KLD_ioi
 
+def batch_loss_function(recon_X, X, seq_lengths, means, stddevs, beta=1):
+    loss = 0
+    for i in range(len(recon_X)):
+        recon_x = recon_X[i]
+        length = seq_lengths[i]
+        x = X[:length, i, :]
+        l = loss_function(recon_x, x, means[i:i+1], stddevs[i:i+1])
+        print('loss: %.5f' % l.item())
+        loss += l
+    return loss / len(recon_X)
+
 def evaluate(batch):
     model.eval()
     n_batch, n_seq, n_features = batch.shape
@@ -93,23 +105,30 @@ def evaluate(batch):
     loss = loss_function(recon_batch, target_tensor, mu, logvar, step)
     return loss.item()
 
-def train(model, data, step, optimizer, beta, writer):
+def train(model, data, data_lengths, step, optimizer, beta, writer):
     model.train()
-    n_seq, n_features = data.shape
+    print(data.shape)
+    n_seq, _, n_features = data.shape
     assert(n_features == onehot_dim)
-    encode_tensor = torch.from_numpy(data).float()
-    target_tensor = torch.from_numpy(data[:, durratio_idx:]).float()
+    encode_tensor = data
+    target_tensor = data[:, :, durratio_idx:]
     if torch.cuda.is_available():
         encode_tensor = encode_tensor.cuda()
         target_tensor = target_tensor.cuda()
     optimizer.zero_grad()
-    recon_x, mean, stddev = model(encode_tensor)
-    loss = loss_function(recon_x, target_tensor, mean, stddev, beta)
+    recon_x, mean, stddev = model(encode_tensor, data_lengths)
+    loss = batch_loss_function(recon_x, target_tensor, data_lengths, mean, stddev, beta)
+    print('batch loss: %.5f' % loss.item())
     loss.backward()
     torch.nn.utils.clip_grad_norm(model.parameters(), 1)
     optimizer.step()
+    '''
+    # test if loss actually went down
+    print("-" * 5, "testing", "-" * 5)
+    recon_x, mean, stddev = model(encode_tensor, data_lengths)
+    loss = batch_loss_function(recon_x, target_tensor, data_lengths, mean, stddev, beta)
+    '''
     step += 1
-    print('loss: %.5f' % loss.item())
     writer.add_scalar('loss', loss.item(), step)
     return step
 
@@ -128,15 +147,15 @@ class MinExponentialLR(ExponentialLR):
 def main():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--hidden", '-hid', type=int, default=512, 
+    parser.add_argument("--hidden", '-hid', type=int, default=768, 
                         help="hidden state dimension")
     parser.add_argument('--epochs', '-e', type=int, default=5, 
                         help="number of epochs")
-    parser.add_argument('--learning_rate', '-lr', type=float, default=1e-5, 
+    parser.add_argument('--learning_rate', '-lr', type=float, default=1e-4, 
                         help="learning rate")
     parser.add_argument('--grudim', '-gd', type=int, default=1024, 
                         help='dimension for gru layer')
-    parser.add_argument('--batch_size', '-b', type=int, default=512, 
+    parser.add_argument('--batch_size', '-b', type=int, default=64, 
                         help='input batch size for training')
     parser.add_argument('--name', '-n', type=str, default='embedded', 
                         help='tensorboard visual name')
@@ -165,7 +184,7 @@ def main():
     f = np.load(data_dir + file_list[0])
     note_dim = f.shape[1]
 
-    model = VAE(note_dim, gru_dim, hidden_dim, dy_dim)
+    model = VAE(note_dim, gru_dim, hidden_dim, batch_size)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     if decay > 0:
         scheduler = MinExponentialLR(optimizer, gamma=decay, minimum=1e-5)
@@ -179,12 +198,36 @@ def main():
 
     for epoch in range(1, epochs):
         print("#" * 5, epoch, "#" * 5)
-        for f in file_list:
-            # data are of different length, can we do 
-            data = np.load(data_dir + f)
-            step = train(model, data, step, optimizer, beta, writer)
-            if decay > 0:
-                scheduler.step()
+        batch_data = []
+        batch_num = 0
+        max_len = 0
+        for i in range(len(file_list)):
+            if i != 0 and i % batch_size == 0 or i == len(file_list) - 1:
+                # create a batch by zero padding
+                print("#" * 5, "batch", batch_num)
+                if (i == len(file_list) - 1):
+                    batch_size = len(file_list) % batch_size
+                seq_lengths = LongTensor(list(map(len, batch_data)))
+                print(seq_lengths.size())
+                max_len = torch.max(seq_lengths).item()
+                print("max_len:", max_len)
+                batch = np.zeros((max_len, batch_size, note_dim))
+                [batch[:batch_data[j].shape[0], j, :] for j in range(len(batch_data))]
+                batch = torch.from_numpy(batch)
+                seq_lengths, perm_idx = seq_lengths.sort(0, descending=True)
+                batch = batch[:, perm_idx, :]
+
+                step = train(model, batch, seq_lengths, step, optimizer, beta, writer)
+                # reset
+                max_len = 0
+                batch_data = []
+                if decay > 0:
+                    scheduler.step()
+                batch_num += 1
+
+            data = np.load(data_dir + file_list[i])
+            batch_data.append(data)
+            
         
         save_path = '../params/{}.pt'.format()
     
