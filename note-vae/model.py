@@ -73,8 +73,9 @@ class VAE(nn.Module):
             [batch, n_seq, feature_len]
         '''
         # self.gru_0.flatten_parameters()
+        print(len(x_lengths))
         n_seq = x.shape[0]
-        hidden = torch.zeros((2, self.batch_size, self.hidden_dims))
+        hidden = torch.zeros((2, len(x_lengths), self.hidden_dims))
 
         x = x.float()
         X = nn.utils.rnn.pack_padded_sequence(x, x_lengths)
@@ -84,9 +85,9 @@ class VAE(nn.Module):
         # x = self.gru_0(x)[-1]
         # x = x.transpose_(0, 1).contiguous()
         # x = x.view(x.size(0), -1)
-        hidden = hidden.view(self.batch_size, 1, -1, 1)
+        hidden = hidden.view(len(x_lengths), 1, -1, 1)
         print(hidden.size())
-        hidden = self.bn(hidden).view(self.batch_size, -1)
+        hidden = self.bn(hidden).view(len(x_lengths), -1)
         # mean = self.linear_mu(x)
         mean = self.linear_mu(hidden)
         stddev = (self.linear_var(hidden) * 0.5).exp_()
@@ -115,7 +116,7 @@ class VAE(nn.Module):
         # out = torch.zeros((z.size(0), self.roll_dims))
         outs = []
 
-        for i in range(self.batch_size):
+        for i in range(len(x_lengths)):
             steps = x_lengths[i]
             out = torch.zeros((1, perf_1hot_dim))
             score_out = torch.zeros((1, score_1hot_dim))
@@ -174,21 +175,21 @@ class VAE(nn.Module):
         if self.training:
             self.sample = x.clone()
         means, stddevs = self.encode(x, x_lengths)
-        assert(means.size(0) == self.batch_size)
-        assert(stddevs.size(0) == self.batch_size)
-        z = torch.zeros((self.batch_size, self.z_dims))
-        dis_mean = torch.zeros((self.batch_size, self.z_dims))
-        dis_stddev = torch.zeros((self.batch_size, self.z_dims))
+        assert(means.size(0) == len(x_lengths))
+        assert(stddevs.size(0) == len(x_lengths))
+        z = torch.zeros((len(x_lengths), self.z_dims))
+        dis_mean = torch.zeros((len(x_lengths), self.z_dims))
+        dis_stddev = torch.zeros((len(x_lengths), self.z_dims))
         if self.training:
-            for i in range(self.batch_size):
+            for i in range(len(x_lengths)):
                 dis = Normal(means[i], stddevs[i])
                 z[i] = dis.rsample()
                 dis_mean[i] = dis.mean
                 dis_stddev[i] = dis.stddev
         else:
-            for i in range(self.batch_size):
+            for i in range(len(x_lengths)):
                 z[i] = Normal(means[i], stddevs[i]).mean
-        assert(z.size(0) == self.batch_size)
+        assert(z.size(0) == len(x_lengths))
         return self.decode(z, score, x_lengths), dis_mean, dis_stddev
 
 

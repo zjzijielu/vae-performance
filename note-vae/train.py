@@ -9,6 +9,7 @@ from torch.distributions import kl_divergence, Normal
 from torch import LongTensor
 from torch.nn import functional as F
 from params import parameters
+import matplotlib.pyplot as plt
 
 p = parameters()
 
@@ -78,18 +79,30 @@ def loss_function(recon_x, x, mean, stddev, beta=1):
     KLD_ioi = beta * kl_divergence(
             Normal(mean_ioi, stddev_ioi),
             Normal(torch.zeros_like(mean_ioi), torch.ones_like(stddev_ioi))).mean()
-    return CE_durratio + KLD_durratio + CE_dy + KLD_dy + CE_ioi + KLD_ioi
+    return CE_durratio, KLD_durratio, CE_dy, KLD_dy, CE_ioi, KLD_ioi
 
 def batch_loss_function(recon_X, X, seq_lengths, means, stddevs, beta=1):
     loss = 0
+    loss_ce_dur = 0
+    loss_kld_dur = 0
+    loss_ce_dy = 0
+    loss_kld_dy = 0
+    loss_ce_ioi = 0
+    loss_kld_ioi = 0
     for i in range(len(recon_X)):
         recon_x = recon_X[i]
         length = seq_lengths[i]
         x = X[:length, i, :]
-        l = loss_function(recon_x, x, means[i:i+1], stddevs[i:i+1])
-        print('loss: %.5f' % l.item())
-        loss += l
-    return loss / len(recon_X)
+        ce_dur, kld_dur, ce_dy, kld_dy, ce_ioi, kld_ioi = loss_function(recon_x, x, means[i:i+1], stddevs[i:i+1])
+        # print('loss: %.5f' % l.item())
+        loss_ce_dur += ce_dur
+        loss_kld_dur += kld_dur
+        loss_ce_dy += ce_dy
+        loss_kld_dy += kld_dy
+        loss_ce_ioi += ce_ioi
+        loss_kld_ioi += kld_ioi
+        loss += (ce_dur + kld_dur + ce_dy + kld_dy + ce_ioi + kld_ioi)
+    return loss / len(recon_X), loss_ce_dur / len(recon_X), loss_kld_dur / len(recon_X), loss_ce_dy / len(recon_X), loss_kld_dy / len(recon_X), loss_ce_ioi / len(recon_X), loss_kld_ioi / len(recon_X)
 
 def evaluate(batch):
     model.eval()
@@ -117,7 +130,7 @@ def train(model, data, data_lengths, step, optimizer, beta, writer):
         target_tensor = target_tensor.cuda()
     optimizer.zero_grad()
     recon_x, mean, stddev = model(encode_tensor, data_lengths)
-    loss = batch_loss_function(recon_x, target_tensor, data_lengths, mean, stddev, beta)
+    loss, loss_ce_dur, loss_kld_dur, loss_ce_dy, loss_kld_dy, loss_ce_ioi, loss_kld_ioi = batch_loss_function(recon_x, target_tensor, data_lengths, mean, stddev, beta)
     print('batch loss: %.5f' % loss.item())
     loss.backward()
     torch.nn.utils.clip_grad_norm(model.parameters(), 1)
@@ -129,7 +142,14 @@ def train(model, data, data_lengths, step, optimizer, beta, writer):
     loss = batch_loss_function(recon_x, target_tensor, data_lengths, mean, stddev, beta)
     '''
     step += 1
-    writer.add_scalar('loss', loss.item(), step)
+    writer.add_scalar('loss_total', loss.item(), step)
+    writer.add_scalar('loss_ce_dur', loss_ce_dur.item(), step)
+    writer.add_scalar('loss_kld_dur', loss_kld_dur.item(), step)
+    writer.add_scalar('loss_ce_dy', loss_ce_dy.item(), step)
+    writer.add_scalar('loss_kld_dy', loss_kld_dy.item(), step)
+    writer.add_scalar('loss_ce_ioi', loss_ce_ioi.item(), step)
+    writer.add_scalar('loss_kld_ioi', loss_kld_ioi.item(), step)
+    
     return step
 
 
@@ -163,6 +183,8 @@ def main():
                         help='learning rate decay: Gamma')
     parser.add_argument('--beta', type=float, default=0.1, 
                         help='beta for kld')
+    parser.add_argument('--data', type=int, default=1000,
+                        help='how many pieces of music to use')
 
     args = parser.parse_args()
 
@@ -173,9 +195,10 @@ def main():
     batch_size = args.batch_size
     decay = args.decay
     beta = args.beta
+    data_num = args.data
 
-    folder_name = "hid%d_e%d_gru%d_lr%.4f_batch%d_decay%.4f_beta%.2f" % (  
-                    hidden_dim, epochs, gru_dim, learning_rate, batch_size, decay, beta)
+    folder_name = "hid%d_e%d_gru%d_lr%.4f_batch%d_decay%.4f_beta%.2f_data%d" % (  
+                    hidden_dim, epochs, gru_dim, learning_rate, batch_size, decay, beta, data_num)
     
     writer = SummaryWriter('../logs/{}'.format(folder_name))
     
@@ -195,14 +218,14 @@ def main():
         model.cuda()
     else:
         print('CPU mode')
-
+    
     for epoch in range(1, epochs):
         print("#" * 5, epoch, "#" * 5)
         batch_data = []
         batch_num = 0
         max_len = 0
         for i in range(len(file_list)):
-            if i != 0 and i % batch_size == 0 or i == len(file_list) - 1:
+            if i != 0 and i % batch_size == 0 or i == len(file_list) - 1 or i == data_num:
                 # create a batch by zero padding
                 print("#" * 5, "batch", batch_num)
                 if (i == len(file_list) - 1):
@@ -224,14 +247,25 @@ def main():
                 if decay > 0:
                     scheduler.step()
                 batch_num += 1
-
             data = np.load(data_dir + file_list[i])
             batch_data.append(data)
+            if i == data_num:
+                break
             
-        
-        save_path = '../params/{}.pt'.format()
+        print("# saving params")
+        param_name = "hid%d_e%d_gru%d_lr%.4f_batch%d_decay%.4f_beta%.2f_epoch%d" % (  
+                    hidden_dim, epochs, gru_dim, learning_rate, batch_size, decay, beta, epoch)
+        save_path = '../params/{}.pt'.format(param_name)
+        if not os.path.exists('params') or not os.path.isdir('params'):
+            os.mkdir('params')
+        if torch.cuda.is_available():
+            torch.save(model.cpu().state_dict(), save_path)
+            model.cuda()
+        else:
+            torch.save(model.state_dict(), save_path)
+        print('# Model saved!')
     
-        
+    writer.close()
 
 if __name__ == '__main__':
     main()
