@@ -31,9 +31,8 @@ ioi_time_idx = p.ioi_time_idx - score_1hot_dim
 parent_dir = os.path.abspath(os.path.join(os.getcwd(), os.pardir))
 data_dir = parent_dir + '/data/2bars_data/'
 
-def loss_function(recon_x, x, mean, stddev, beta=1):
+def loss_function(recon_x, x, mean, stddev, beta=1, verbose=0):
     recon_x = recon_x.view(recon_x.shape[0], -1)
-    x = x[:, score_1hot_dim:]
     recon_x_durratio = recon_x[:, durratio_idx:dy_idx]   
     recon_x_dy = recon_x[:, dy_idx:ioi_time_idx]
     recon_x_ioi = recon_x[:, ioi_time_idx:]
@@ -45,10 +44,10 @@ def loss_function(recon_x, x, mean, stddev, beta=1):
     stddev_durratio = stddev[:, durratio_idx:dy_idx]
     stddev_dy = stddev[:, dy_idx:ioi_time_idx]
     stddev_ioi = stddev[:, ioi_time_idx:]
-
-    x_durratio = x[:, durratio_idx:dy_idx]
-    x_dy = x[:, dy_idx:ioi_time_idx]
-    x_ioi = x[:, ioi_time_idx:]
+    # print(np.where(x == 1))
+    x_durratio = torch.argmax(x[:, durratio_idx:dy_idx], dim=1)
+    x_dy = torch.argmax(x[:, dy_idx:ioi_time_idx], dim=1)
+    x_ioi = torch.argmax(x[:, ioi_time_idx:], dim=1)
 
     CE_durratio = 0
     KLD_durratio = 0
@@ -60,9 +59,12 @@ def loss_function(recon_x, x, mean, stddev, beta=1):
     for i in range(len(x)):
         # print(np.where(x_durratio[i] == 1)[0].shape)
         # print(x_durratio[i].view(-1, x_durratio[i].shape[0]).max(-1)[1])
-        target_durratio = x_durratio[i].view(-1, x_durratio[i].shape[0]).max(-1)[1]
-        target_dy = x_dy[i].view(-1, x_dy[i].shape[0]).max(-1)[1]
-        target_ioi = x_ioi[i].view(-1, x_ioi[i].shape[0]).max(-1)[1]
+        target_durratio = x_durratio[i].view(1)
+        target_dy = x_dy[i].view(1)
+        target_ioi = x_ioi[i].view(1)
+        if (verbose == 1):
+            print("dy target:", target_dy, "\ntrain result: ", recon_x_dy[i])
+            # print("ioi target:", target_ioi, "\ntrain result: ", recon_x_ioi[i])
         CE_durratio += F.nll_loss(
             recon_x_durratio[i].view(-1, recon_x_durratio[i].size(-1)), target_durratio, reduction='elementwise_mean')
         CE_dy += F.nll_loss(
@@ -120,11 +122,10 @@ def evaluate(batch):
 
 def train(model, data, data_lengths, step, optimizer, beta, writer):
     model.train()
-    print(data.shape)
     n_seq, _, n_features = data.shape
     assert(n_features == onehot_dim)
     encode_tensor = data
-    target_tensor = data[:, :, durratio_idx:]
+    target_tensor = data[:, :, score_1hot_dim:]
     if torch.cuda.is_available():
         encode_tensor = encode_tensor.cuda()
         target_tensor = target_tensor.cuda()
@@ -166,7 +167,6 @@ class MinExponentialLR(ExponentialLR):
 
 def main():
     parser = argparse.ArgumentParser()
-
     parser.add_argument("--hidden", '-hid', type=int, default=768, 
                         help="hidden state dimension")
     parser.add_argument('--epochs', '-e', type=int, default=5, 
@@ -235,11 +235,11 @@ def main():
                 max_len = torch.max(seq_lengths).item()
                 print("max_len:", max_len)
                 batch = np.zeros((max_len, batch_size, note_dim))
-                [batch[:batch_data[j].shape[0], j, :] for j in range(len(batch_data))]
+                for j in range(len(batch_data)):
+                    batch[:batch_data[j].shape[0], j, :] = batch_data[j]
                 batch = torch.from_numpy(batch)
                 seq_lengths, perm_idx = seq_lengths.sort(0, descending=True)
                 batch = batch[:, perm_idx, :]
-
                 step = train(model, batch, seq_lengths, step, optimizer, beta, writer)
                 # reset
                 max_len = 0
@@ -253,8 +253,8 @@ def main():
                 break
             
         print("# saving params")
-        param_name = "hid%d_e%d_gru%d_lr%.4f_batch%d_decay%.4f_beta%.2f_epoch%d" % (  
-                    hidden_dim, epochs, gru_dim, learning_rate, batch_size, decay, beta, epoch)
+        param_name = "hid%d_e%d_gru%d_lr%.4f_batch%d_decay%.4f_beta%.2f_data%d_epoch%d" % (  
+                    hidden_dim, epochs, gru_dim, learning_rate, batch_size, decay, beta, data_num, epoch)
         save_path = '../params/{}.pt'.format(param_name)
         if not os.path.exists('params') or not os.path.isdir('params'):
             os.mkdir('params')
