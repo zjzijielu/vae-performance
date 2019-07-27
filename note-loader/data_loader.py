@@ -21,7 +21,7 @@ class MidiLoader:
 
         # performance part
         self.durratio_dim = 250 # base is 0.02, from 0 to 5
-        self.dy_dim = 8
+        self.dy_dim = 64
         self.ioi_time_dim = 801 # base is 0.01s, maximum 8s
 
         # total dimension
@@ -46,6 +46,7 @@ class MidiLoader:
         self.least_change = least_change
         self.max_dur_beat = 8
         self.min_notes_num = 3
+        self.dy_base = 128 / self.dy_dim
 
         parent_dir = os.path.abspath(os.path.join(os.getcwd(), os.pardir))
         self.output_dir = parent_dir + "/data/2bars_data/"
@@ -177,6 +178,7 @@ class MidiLoader:
         #### convert pitch to 1hot ####
         notes_1hot[:, self.pitch_idx:self.ioi_beat_idx] = self.pitch_1hot_encode(notes[:, 2], num_notes)
         #### convert ioi beat to 1hot ####
+        # print(notes[:, -2])
         notes_1hot[:, self.ioi_beat_idx:self.dur_idx] = self.ioi_beat_encode(notes[:, -2], num_notes)
         #### convert duration to 1hot ####
         notes_1hot[:, self.dur_idx:self.durratio_idx] = self.dur_1hot_encode(notes[:, 9], num_notes)
@@ -307,7 +309,7 @@ class MidiLoader:
     def dy_1hot_encode(self, dy, num_notes):
         classes = np.arange(0, self.dy_dim)
         dy_1hot = np.zeros((num_notes, self.dy_dim))
-        dy_norm = (dy / 16).astype(int) - 1
+        dy_norm = (dy / 2).astype(int) - 1
         dy_1hot[np.arange(num_notes), dy_norm] = 1
         return dy_1hot.astype(int)
 
@@ -318,15 +320,17 @@ class MidiLoader:
         classes = np.arange(0, self.ioi_beat_dim)
         # print("ioi_beat", ioi_beat)
         ioi_beat_1hot = np.zeros((num_notes, self.ioi_beat_dim))
-        c = np.where(ioi_beat > self.max_dur_beat)[0]
+        c = np.where(ioi_beat >= self.max_dur_beat)[0]
         if (c.size > 0):
             # print(ioi_beat)
             ioi_beat[c] = ioi_beat[c] % self.max_dur_beat
             # print(ioi_beat)
-        c = np.where(ioi_beat > self.max_dur_beat)[0]
+        c = np.where(ioi_beat >= self.max_dur_beat)[0]
         assert(c.size == 0)
 
-        ioi_beat_norm = (ioi_beat / self.ioi_beat_base).astype(int) - 1
+        ioi_beat_norm = (ioi_beat / self.ioi_beat_base).astype(int)
+        # print(ioi_beat_norm) 
+        # print((ioi_beat_norm) * self.ioi_beat_base)
         ioi_beat_1hot[np.arange(num_notes), ioi_beat_norm] = 1
         return ioi_beat_1hot.astype(int)
         

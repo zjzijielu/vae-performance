@@ -19,7 +19,7 @@ dur_dim = 64 # base 1/16 beat, longest 4 beats
 
 # performance part
 durratio_dim = 250 # base is 0.1, from 0 to 10
-dy_dim = 8
+dy_dim = 64
 ioi_time_dim = 801 # base is 0.01s, maximum 8s
 
 # total dimension
@@ -43,6 +43,7 @@ durratio_base = 0.02
 ioi_time_base = 0.01
 max_dur_beat = 8
 min_notes_num = 3
+dy_base = 2
 
 
 # get files
@@ -56,13 +57,19 @@ for i, f_name in enumerate(files):
     print(pitch)
     
     # dynamic
-    dy = np.where(m[:, dy_idx:ioi_time_idx] == 1)[1] + 1
-    
+    dy = np.where(m[:, dy_idx:ioi_time_idx] == 1)[1]
+    print("dy:", dy)
+
     # ioi
     ioi_time = np.where(m[:, ioi_time_idx:] == 1)[1]
     ioi_time = ioi_time * ioi_time_base
     print("ioi:", ioi_time)
-    
+
+    # ioi beats
+    ioi_beat = np.where(m[:, ioi_beat_idx:dur_idx] == 1)[1]
+    print("ioi_beat idx", ioi_beat)
+    ioi_beat = ioi_beat * ioi_beat_base
+    print("ioi beats:", ioi_beat)
     # duration
     dur_beats = np.where(m[:, dur_idx:durratio_idx] == 1)[1]
     print("dur beats idx:", dur_beats)
@@ -76,23 +83,37 @@ for i, f_name in enumerate(files):
     print("perf_dur:", perf_dur)
 
     # synthesize midi file 
-    midi_file = pretty_midi.PrettyMIDI()
+    midi_file_perf = pretty_midi.PrettyMIDI()
+    midi_file_score = pretty_midi.PrettyMIDI()
     # Create an instrument instance for a piano instrument
     piano_program = pretty_midi.instrument_name_to_program('Acoustic Grand Piano')
     piano_perf = pretty_midi.Instrument(program=piano_program)
+    piano_score = pretty_midi.Instrument(program=piano_program)
 
     start_t = 0
     for i in range(len(m)):
         p = pitch[i]
         start_t = start_t + ioi_time[i]
         end_t = start_t + perf_dur[i]
-        velocity = dy[i]
+        velocity = dy[i] * dy_base
         note_perf = pretty_midi.Note(velocity=velocity, pitch=p, start=start_t, end=end_t)
         piano_perf.notes.append(note_perf)
 
-    midi_file.instruments.append(piano_perf)
+    start_t = 0
+    for i in range(len(m)):
+        p = pitch[i]
+        start_t = start_t + ioi_beat[i]
+        end_t = start_t + dur_beats[i]
+        note_score = pretty_midi.Note(velocity=80, pitch=p, start=start_t, end=end_t)
+        piano_score.notes.append(note_score) 
+
+    midi_file_perf.instruments.append(piano_perf)
     file_name_perf = f_name[:-4] + ".mid"
-    midi_file.write(output_dir + file_name_perf)
+    midi_file_perf.write(output_dir + file_name_perf)
+
+    midi_file_score.instruments.append(piano_score)
+    file_name_score = f_name[:-4] + "_score.mid"
+    midi_file_score.write(output_dir + file_name_score)
 
     # check if tempo has changes
     midi_data = pretty_midi.PrettyMIDI(output_dir + file_name_perf)
